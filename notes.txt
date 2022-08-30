@@ -1,0 +1,4 @@
+Goal: Beat BLAST w/ querying through protein embeddings. 
+Diamond BLAST Annotation:
+    diamond makedb --in prot_train.fasta -d blast_results/prot_train 
+    diamond blastp -d blast_results/prot_train.dmnd -q prot_val.fasta --outfmt 6 qseqid sseqid bitscore >> blast_results/blast_hit_val.tsv
