@@ -5,3 +5,4 @@
 /go_metric/lightning_logs
 /go_metric/eval
 /go_metric/models/__pycache__
+/go_metric/__pycache__
