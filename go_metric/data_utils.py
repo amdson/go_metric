@@ -16,11 +16,12 @@ from go_bench.load_tools import load_GO_tsv_file, load_protein_sequences, conver
 
 class SequenceDataset(data.Dataset):
     'Characterizes a dataset for PyTorch'
-    def __init__(self, prot_names, sequences, labels, max_len=300):
+    def __init__(self, prot_names, sequences, labels, max_len=300, mini=None):
         self.prot_names = prot_names
         self.labels = labels #A csr matrix in which the ith row gives the classifications of the ith protein
         self.sequences = sequences #A list of strings representing proteins
         self.max_len = max_len
+        self.mini = mini
         
     @classmethod
     def from_memory(cls, annotation_tsv_path, terms_list_path, sequence_path):
@@ -34,6 +35,8 @@ class SequenceDataset(data.Dataset):
         
     def __len__(self):
         'Denotes the total number of samples'
+        if(self.mini is not None):
+            return self.mini #Good for debugging
         return len(self.sequences)
 
     def __getitem__(self, index):
@@ -56,10 +59,12 @@ class BertSeqDataset(SequenceDataset):
             pickle.dump(self, f)
 
     @classmethod
-    def from_pickle(cls, fn):
+    def from_pickle(cls, fn, mini=None):
         import pickle
         with open(fn, 'rb') as f:
-            return pickle.load(f)
+            s = pickle.load(f)
+            s.mini = mini
+            return s
 
     @classmethod
     def from_dgp_pickle(cls, term_fn, prot_fn):
@@ -98,6 +103,30 @@ def get_seq_collator(vocab, device=None):
             labels.append(label)
         return vocab.to_input_tensor(sequences, device=device), torch.stack(labels)
     return collate_sequences
+
+class EmbData(data.Dataset):
+    def __init__(self, prot_ids, embeddings, labels):
+        self.prot_ids = prot_ids
+        self.embeddings = embeddings
+        self.labels = labels
+
+    def __getitem__(self, index):
+        return self.prot_ids[index], self.embeddings[index], torch.squeeze(torch.from_numpy(self.labels[index, :].toarray()), 0)
+    def __len__(self):
+        return len(self.prot_ids)
+
+    @classmethod
+    def from_file(cls, emb_path, label_path, term_list_path):
+        import pickle
+        with open(emb_path, "rb") as f:
+            emb = pickle.load(f)
+            embeddings = emb["embeddings"]
+            prot_ids = emb["prot_ids"]
+        with open(term_list_path, "r") as f:
+            term_list = json.load(f)
+        protein_annotation_dict = load_GO_tsv_file(label_path)
+        labels = convert_to_sparse_matrix(protein_annotation_dict, term_list, prot_ids)
+        return EmbData(prot_ids, embeddings, labels)
 
 def write_sparse(fn, preds, prot_rows, GO_cols, go, min_certainty):
     with open(fn, mode='w') as f:

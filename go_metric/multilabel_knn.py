@@ -18,11 +18,10 @@ def get_embeddings(model, dataloader, device):
 
 def embedding_knn(db_emb, q_emb, db_labels, k=10):
     matches = knn(db_emb, q_emb, k).cpu().numpy() # 2 x N*K
-    print("made matches", matches.shape)
     q_labels = csr_matrix((q_emb.shape[0], db_labels.shape[1]), dtype=float)
     for i in range(q_emb.shape[0]):
-        if(i % 10000 == 0):
-            print(f"{i/q_emb.shape[0]*100} %")
+        # if(i % 10000 == 0):
+        #     print(f"{i/q_emb.shape[0]*100} %")
         db_res = matches[1, i*k:(i+1)*k]
         db_avg = csr_matrix(db_labels[db_res].sum(axis=0) / k)
         q_labels[i] = db_avg

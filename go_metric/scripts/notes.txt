@@ -1,0 +1,18 @@
+Load dataset from scratch
+# train_dataset = BertSeqDataset.from_memory(f"{train_path}/training_molecular_function_annotations.tsv", 
+#                                             f"{train_path}/molecular_function_terms.json",
+#                                             "/home/andrew/go_metric/data/uniprot_reviewed.fasta")
+# val_dataset = BertSeqDataset.from_memory(f"{train_path}/validation_molecular_function_annotations.tsv", 
+#                                         f"{train_path}/molecular_function_terms.json",
+#                                         "/home/andrew/go_metric/data/uniprot_reviewed.fasta")
+# train_dataset.to_pickle(f"{train_path}/train.pkl")
+# val_dataset.to_pickle(f"{train_path}/val.pkl")
+
+Load dataset from pkl
+train_dataset = BertSeqDataset.from_pickle(f"{train_path}/train.pkl")
+val_dataset = BertSeqDataset.from_pickle(f"{train_path}/val.pkl")
+
+Load DeepGO dataset
+# train_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/train_data.pkl")
+# val_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/test_data.pkl")
+

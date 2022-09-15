@@ -4,9 +4,11 @@ import numpy as np
 import pytorch_lightning as pl
 from sklearn.metrics import f1_score
 from go_metric.metric_loss import multilabel_triplet_loss
+from go_metric.multilabel_knn import embedding_knn
+from scipy import sparse
 
 #Possible improvements
-#Different pooling for small convs, more layers for small convs, better
+#Different pooling for small convs, more layers for small convs
 
 def conv1d_xiaver_init(conv):
     nn.init.xavier_normal_(conv.weight)
@@ -24,10 +26,8 @@ class BaseFilter(nn.Module):
     def forward(self, one_hot):
         x = self.conv(one_hot)
         x = self.pool(x)
-        print("DPG after pooling", x.shape)
         x = self.relu(x)
         return torch.flatten(x, start_dim=1)
-
 
 class DPGConvSeq(nn.Module):
     def __init__(self, vocab_size, num_classes, nb_filters, max_kernel, max_len):
@@ -71,12 +71,17 @@ class DPGConvSeq(nn.Module):
         return out
 
 class DPGModule(pl.LightningModule):
-    def __init__(self, vocab_size, num_classes, max_kernel=129, nb_filters=512, max_len=1024, lr=3e-4, term_ic=None):
+    def __init__(self, vocab_size=30, num_classes=865, max_len=1024, 
+                    max_kernel=129, num_filters=512, batch_size=128,
+                    bottleneck_size=128, bottleneck_regularization=0.0, 
+                    bottleneck_layers=1, classification_layers=1, label_loss_weight=10.0,
+                    sim_margin=3.0, tmargin=1.0, gradient_clipping_decay=1.0, 
+                    learning_rate=3e-4, lr_decay_rate= 0.9997, term_ic=None):
         super().__init__()
         self.save_hyperparameters()
         self.term_ic = term_ic
-        self.model = DPGConvSeq(vocab_size, num_classes, nb_filters, max_kernel, max_len)
-        self.lr = lr
+        self.model = DPGConvSeq(vocab_size, num_classes, num_filters, max_kernel, max_len)
+        self.lr = learning_rate
         self.loss = nn.BCEWithLogitsLoss()
 
     def forward(self, x, return_embedding=False):
@@ -97,8 +102,17 @@ class DPGModule(pl.LightningModule):
         self.log('loss/train', loss)
         self.log('label_loss/train', label_loss)
         self.log('metric_loss/train', metric_loss)
-        return loss
+        return {"loss": loss, "embeddings":embedding.detach(), "labels": sparse.csr_matrix(batch["labels"].cpu().numpy())}
     
+    def training_epoch_end(self, outputs):
+        labels, embeddings = [], []
+        for output in outputs:
+            labels.append(output["labels"])
+            embeddings.append(output["embeddings"])
+        self.train_labels = sparse.vstack(labels)
+        self.train_embeddings = torch.cat(embeddings, dim=0)
+        return super().training_epoch_end(outputs)
+        
     def validation_step(self, batch, batch_idx):
         # training_step defined the train loop.
         x, y = batch["seq"], batch["labels"] 
@@ -111,22 +125,35 @@ class DPGModule(pl.LightningModule):
         self.log('loss/val', loss)
         self.log('label_loss/val', label_loss)
         self.log('metric_loss/val', metric_loss)
-        return loss
+        output = {"loss": loss, "label_loss": label_loss, "metric_loss": metric_loss, 
+                "labels": batch["labels"], "logits": logits, "embeddings": embedding}
+        return output
 
-    # def validation_epoch_end(self, outputs):
-    #     labels, logits = [], []
-    #     for output in outputs:
-    #         labels.append(output["labels"])
-    #         logits.append(output["logits"])
-    #     labels = np.concatenate(labels, axis=0)
-    #     logits = np.concatenate(logits, axis=0)
-    #     thresholds = [-3, -1, -0.5, 0, 0.5, 1, 3]
-    #     f1 = 0
-    #     for threshold in thresholds:
-    #         preds = logits > threshold
-    #         f1 = max(f1, f1_score(labels, preds, average='micro'))
-    #     self.log('F1/val', f1, prog_bar=True)
-    #     return super().validation_epoch_end(outputs)
+    def validation_epoch_end(self, outputs):
+        labels, logits, embeddings = [], [], []
+        for output in outputs:
+            labels.append(output["labels"])
+            logits.append(output["logits"])
+            embeddings.append(output["embeddings"])
+        labels = torch.cat(labels, dim=0).cpu().numpy()
+        logits = torch.cat(logits, dim=0)
+
+        preds = (logits > 0).cpu().numpy()
+        f1 = f1_score(labels, preds, average='micro')
+        self.log('F1/val', f1, prog_bar=True)
+
+        val_embeddings = torch.cat(embeddings, dim=0)
+        self.val_embeddings = val_embeddings
+        self.val_labels = labels
+        return super().validation_epoch_end(outputs)
+
+    def on_train_epoch_end(self):
+        train_embeddings = self.train_embeddings.to(self.device)
+        val_embeddings = self.val_embeddings.to(self.device)
+        val_preds = embedding_knn(train_embeddings, val_embeddings, self.train_labels, k=3).toarray() >= 0.3
+        knn_f1 = f1_score(self.val_labels, val_preds, average='micro')
+        self.log('knn_F1/val', knn_f1, prog_bar=True)
+        self.train_embeddings, self.train_labels, self.val_embeddings, self.val_labels = None, None, None, None
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -139,20 +166,27 @@ class DPGModule(pl.LightningModule):
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("LitModel")
-        parser.add_argument("--input_dim", type=int, default=128)
-        parser.add_argument("--num_layers", type=int, default=8)
-        parser.add_argument('--gradient_clipping_decay', type=float, default=1.0)
-        parser.add_argument('--batch_size', type=int, default=156)
-        parser.add_argument('--dilation_rate', type=float, default=2)
-        parser.add_argument('--num_filters', type=int, default=1600)
-        parser.add_argument('--first_dilated_layer', type=int, default=4)  # This is 0-indexed
-        parser.add_argument('--kernel_size', type=int, default=9)
-        parser.add_argument('--max_len', type=int, default=1024)
-        parser.add_argument('--num_classes', type=int, default=865)
         parser.add_argument('--vocab_size', type=int, default=30)
-        parser.add_argument('--pooling', type=str, default='max')
-        parser.add_argument('--bottleneck_factor', type=float, default=0.5)
+        parser.add_argument('--batch_size', type=int, default=128)
+        parser.add_argument('--max_len', type=int, default=1024)
+
+        parser.add_argument('--num_classes', type=int, default=865)
+        parser.add_argument('--num_filters', type=int, default=512)
+        parser.add_argument('--max_kernel', type=int, default=129)
+        parser.add_argument("--bottleneck_size", type=int, default=128)
+        parser.add_argument("--bottleneck_regularization", type=float, default=0.0)
+
+        parser.add_argument("--bottleneck_layers", type=int, default=1)
+        parser.add_argument("--classification_layers", type=int, default=1)
+
+        parser.add_argument('--sim_margin', type=float, default=3.0)
+        parser.add_argument('--tmargin', type=float, default=1.0)
+
+        parser.add_argument('--label_loss_weight', type=float, default=10.0)
+        parser.add_argument('--learning_rate', type=float, default=0.005)
         parser.add_argument('--lr_decay_rate', type=float, default=0.9997)
-        parser.add_argument('--learning_rate', type=float, default=0.0005)
+
+        parser.add_argument('--gradient_clipping_decay', type=float, default=1.0)
+        
         return parent_parser
 
