@@ -26,13 +26,11 @@ if __name__ == "__main__":
     val_dataset = BertSeqDataset.from_pickle(f"{train_path}/val.pkl")
 
     collate_seqs = get_bert_seq_collator(max_length=hparams.max_len, add_special_tokens=False)
-    dataloader_params = {"shuffle": True, "batch_size": 128, "collate_fn":collate_seqs}
-    val_dataloader_params = {"shuffle": False, "batch_size": 128, "collate_fn":collate_seqs}
+    dataloader_params = {"shuffle": True, "batch_size": 256, "collate_fn":collate_seqs}
+    val_dataloader_params = {"shuffle": False, "batch_size": 256, "collate_fn":collate_seqs}
 
     train_loader = DataLoader(train_dataset, **dataloader_params, num_workers=6)
     val_loader = DataLoader(val_dataset, **val_dataloader_params)
-
-
     with open(f"{train_path}/../ic_dict.json") as f:
         ic_dict = json.load(f)
     with open(f"{train_path}/molecular_function_terms.json") as f:
@@ -40,14 +38,14 @@ if __name__ == "__main__":
     term_ic = torch.from_numpy(ic_mat(terms, ic_dict).reshape((-1, 1)))
 
     model = DPGModule(**vars(model_hparams), term_ic=None)
-    early_stop_callback = EarlyStopping(monitor='loss/val', min_delta=0.00, patience=5, verbose=True, mode='min')
+    early_stop_callback = EarlyStopping(monitor="knn_F1/val", min_delta=0.00, patience=5, verbose=True, mode='max')
     checkpoint_callback = ModelCheckpoint(
         filename="/home/andrew/go_metric/checkpoints/dgp_bottleneck_conv_dgp_data",
         verbose=True,
-        monitor='loss/val'
+        monitor="knn_F1/val"
     )
 
     trainer = pl.Trainer(gpus=[1,], max_epochs=100, profiler='simple', 
-        auto_lr_find=True, callbacks=[early_stop_callback, checkpoint_callback])    # Train the model
+        callbacks=[early_stop_callback, checkpoint_callback])    # Train the model
 
     trainer.fit(model, train_loader, val_loader)

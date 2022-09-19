@@ -29,17 +29,8 @@ class BaseFilter(nn.Module):
         x = self.relu(x)
         return torch.flatten(x, start_dim=1)
 
-def get_MLP(layer_dim, dropout=0.5):
-    mlp = nn.Sequential()
-    for i in range(len(layer_dim)-1):
-        mlp.append(nn.Linear(layer_dim[i], layer_dim[i+1]))
-        if(i < len(layer_dim)-2):
-            mlp.append(nn.Dropout(p=0.5))
-            mlp.append(nn.ReLU())
-    return mlp
-
 class DPGConvSeq(nn.Module):
-    def __init__(self, vocab_size, bottleneck_dim, hidden_dims, num_classes, nb_filters, max_kernel, max_len):
+    def __init__(self, vocab_size, num_classes, nb_filters, max_kernel, max_len):
         super().__init__()
         self.conv1 = nn.Conv1d(vocab_size, 128, 3, padding='same')
         self.dropout = nn.Dropout(p=0.5)
@@ -49,8 +40,8 @@ class DPGConvSeq(nn.Module):
             bf = BaseFilter(128, kernel_size, nb_filters, max_len)
             nets.append(bf)
         self.nets = nn.ModuleList(nets)
-        bottleneck_layers = [nb_filters*len(kernel_sizes)] + hidden_dims + [bottleneck_dim]
-        self.bottleneck = get_MLP(bottleneck_layers)
+        self.l1 = nn.Linear(nb_filters*len(kernel_sizes), 1024)
+        self.bottleneck = nn.Linear(1024, 128)
         self.l2 = nn.Linear(128, 1024)
         self.classifier_layer = nn.Linear(1024, num_classes)
         self.relu = nn.ReLU()
@@ -74,24 +65,23 @@ class DPGConvSeq(nn.Module):
         outputs = [bf(out) for bf in self.nets]
         out = torch.cat(outputs, axis=1)
         out = self.dropout(out)
+        out = self.l1(out)
+        out = self.relu(out)
         out = self.bottleneck(out)
         return out
 
 class DPGModule(pl.LightningModule):
     def __init__(self, vocab_size=30, num_classes=865, max_len=1024, 
-                    max_kernel=129, num_filters=512, bottleneck_dim=128, hidden_dims=(1024,), bottleneck_regularization=0.0, 
+                    max_kernel=129, num_filters=512, batch_size=128,
+                    bottleneck_size=128, bottleneck_regularization=0.0, 
                     bottleneck_layers=1, classification_layers=1, label_loss_weight=10.0,
                     sim_margin=3.0, tmargin=1.0, gradient_clipping_decay=1.0, 
-                    learning_rate=3e-4, lr_decay_rate= 0.9997, term_ic=None, git_hash=None):
+                    learning_rate=3e-4, lr_decay_rate= 0.9997, term_ic=None):
         super().__init__()
         self.save_hyperparameters()
         self.term_ic = term_ic
-        self.model = DPGConvSeq(vocab_size, bottleneck_dim, hidden_dims, num_classes, num_filters, max_kernel, max_len)
+        self.model = DPGConvSeq(vocab_size, num_classes, num_filters, max_kernel, max_len)
         self.lr = learning_rate
-        self.sim_margin = sim_margin
-        self.tmargin = tmargin
-        self.bottleneck_regularization = bottleneck_regularization
-        self.label_loss_weight = label_loss_weight
         self.loss = nn.BCEWithLogitsLoss()
 
     def forward(self, x, return_embedding=False):
@@ -106,9 +96,8 @@ class DPGModule(pl.LightningModule):
         y = y.float()
         logits, embedding = self.model.forward(x, return_embedding=True)
         label_loss = self.loss(logits, y)
-        metric_loss = multilabel_triplet_loss(embedding, y, label_weights=self.term_ic, sim_margin=self.sim_margin, tmargin=self.tmargin)
-        emb_loss = self.bottleneck_regularization * torch.square(embedding).sum(axis=1).mean()
-        loss = self.label_loss_weight*label_loss + metric_loss + emb_loss
+        metric_loss = multilabel_triplet_loss(embedding, y, label_weights=self.term_ic, sim_margin=3.0, tmargin=1.0)
+        loss = 10*label_loss + metric_loss
         # Logging to TensorBoard by default
         self.log('loss/train', loss)
         self.log('label_loss/train', label_loss)
@@ -122,14 +111,6 @@ class DPGModule(pl.LightningModule):
             embeddings.append(output["embeddings"])
         self.train_labels = sparse.vstack(labels)
         self.train_embeddings = torch.cat(embeddings, dim=0)
-
-        train_embeddings = self.train_embeddings.to(self.device)
-        val_embeddings = self.val_embeddings.to(self.device)
-        val_preds = embedding_knn(train_embeddings, val_embeddings, self.train_labels, k=3).toarray() >= 0.3
-        knn_f1 = f1_score(self.val_labels, val_preds, average='micro')
-        self.log('knn_F1/val', knn_f1, prog_bar=True)
-        self.train_embeddings, self.train_labels, self.val_embeddings, self.val_labels = None, None, None, None
-
         return super().training_epoch_end(outputs)
         
     def validation_step(self, batch, batch_idx):
@@ -165,6 +146,14 @@ class DPGModule(pl.LightningModule):
         self.val_embeddings = val_embeddings
         self.val_labels = labels
         return super().validation_epoch_end(outputs)
+
+    def on_train_epoch_end(self):
+        train_embeddings = self.train_embeddings.to(self.device)
+        val_embeddings = self.val_embeddings.to(self.device)
+        val_preds = embedding_knn(train_embeddings, val_embeddings, self.train_labels, k=3).toarray() >= 0.3
+        knn_f1 = f1_score(self.val_labels, val_preds, average='micro')
+        self.log('knn_F1/val', knn_f1, prog_bar=True)
+        self.train_embeddings, self.train_labels, self.val_embeddings, self.val_labels = None, None, None, None
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)

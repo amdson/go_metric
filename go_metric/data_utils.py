@@ -147,3 +147,7 @@ def read_sparse(fn, prot_rows, GO_cols):
         if(prot in prm and go_id in tcm):
             sparse_probs[prm[prot], tcm[go_id]] = prob
     return csr_matrix(sparse_probs)
+
+import subprocess
+def get_git_revision_short_hash() -> str:
+    return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
