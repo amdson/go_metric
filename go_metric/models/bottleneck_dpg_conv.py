@@ -51,7 +51,7 @@ class DPGConvSeq(nn.Module):
         self.nets = nn.ModuleList(nets)
         bottleneck_layers = [nb_filters*len(kernel_sizes)] + hidden_dims + [bottleneck_dim]
         self.bottleneck = get_MLP(bottleneck_layers)
-        self.l2 = nn.Linear(128, 1024)
+        self.l2 = nn.Linear(bottleneck_dim, 1024)
         self.classifier_layer = nn.Linear(1024, num_classes)
         self.relu = nn.ReLU()
         self.vocab_size = vocab_size

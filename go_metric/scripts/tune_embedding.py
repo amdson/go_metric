@@ -20,16 +20,17 @@ def gen_objective(train_loader, val_loader):
         tmargin = 0.9 #trial.suggest_float("tmargin", 0.1, 3.0)
         bottleneck_regularization = 0.01 #trial.suggest_float("bottleneck_regularization", 0, 0.3)
         # dropout = trial.suggest_uniform("dropout", 0, 1)
-        num_filters = trial.suggest_int("num_filters", 128, 1024)
-        bnk_layers = trial.suggest_int("num_bottleneck_layers", 1, 4)
-        hidden_size = trial.suggest_int("bnk_size", 512, 4096)
+        num_filters = trial.suggest_int("num_filters", 512, 1024)
+        bnk_layers = trial.suggest_int("num_bottleneck_layers", 1, 3)
+        hidden_size = trial.suggest_int("hidden_size", 512, 4096)
         bnk_dims = [hidden_size]*bnk_layers
         bnk_size = trial.suggest_int("bnk_size", 64, 256)
+        label_loss_weight = trial.suggest_float("label_loss_weight", 0.1, 10, log=True)
         dropout = 0.5
         git_hash = get_git_revision_short_hash()
         print(f"Running trial with {num_filters=} {git_hash=} {bnk_size=} {bnk_dims=}")
-        model = DPGModule(num_filters=num_filters, sim_margin=sim_margin, tmargin=tmargin, hidden_dims=bnk_dims, bottleneck_dim=bnk_size
-                        bottleneck_regularization=bottleneck_regularization, learning_rate=lr, 
+        model = DPGModule(num_filters=num_filters, sim_margin=sim_margin, tmargin=tmargin, hidden_dims=bnk_dims, bottleneck_dim=bnk_size,
+                        bottleneck_regularization=bottleneck_regularization, learning_rate=lr, label_loss_weight=label_loss_weight, 
                         term_ic=None, git_hash=git_hash)
 
         callbacks=[PyTorchLightningPruningCallback(trial, monitor="knn_F1/val"),
@@ -69,7 +70,7 @@ if __name__ == "__main__":
     pruner: optuna.pruners.BasePruner = (optuna.pruners.MedianPruner() if args.pruning else optuna.pruners.NopPruner())
     objective = gen_objective(train_loader, val_loader)
     study = optuna.create_study(direction="maximize", pruner=pruner)
-    study.optimize(objective, n_trials=10, timeout=72000)
+    study.optimize(objective, n_trials=12, timeout=720000)
 
     print("Number of finished trials: {}".format(len(study.trials)))
 
