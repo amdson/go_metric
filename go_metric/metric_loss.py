@@ -10,8 +10,10 @@ def get_all_triplets(sim_score, sim_margin=3.0):
 def multilabel_triplet_loss(embeddings, labels, label_weights=None, sim_margin=1.0, tmargin=1.5):
     if(label_weights is None):
         label_weights = torch.ones((1, labels.shape[1]), device=labels.device)
+    else:
+        label_weights = label_weights.to(labels.device)
     emb_dist = torch.cdist(embeddings, embeddings)
-    sim_score = labels.multiply(label_weights.to(labels.device)) @ labels.T
+    sim_score = labels.multiply(label_weights) @ labels.T
     a, p, n = get_all_triplets(sim_score, sim_margin=sim_margin)
     # print(a.shape)
     pos_pairs = emb_dist[a, p]

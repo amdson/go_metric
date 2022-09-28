@@ -10,6 +10,17 @@ from go_bench.metrics import calculate_ic, ic_mat
 from argparse import ArgumentParser
 
 
+"""
+batch_size: 256
+num_filters: 800
+bottleneck_layers: 1.0
+label_loss_weight: 10
+sim_margin: 12
+tmargin: 0.9
+learning_rate: 5e-4
+
+label_loss_decay: 
+"""
 
 parser = ArgumentParser()
 parser = DPGModule.add_model_specific_args(parser)
@@ -35,17 +46,16 @@ if __name__ == "__main__":
         ic_dict = json.load(f)
     with open(f"{train_path}/molecular_function_terms.json") as f:
         terms = json.load(f)
-    term_ic = torch.from_numpy(ic_mat(terms, ic_dict).reshape((-1, 1)))
+    term_ic = torch.FloatTensor(ic_mat(terms, ic_dict).reshape((1, -1)))
 
-    model = DPGModule(**vars(model_hparams), term_ic=None)
+    model = DPGModule(**vars(model_hparams), term_ic=term_ic)
     early_stop_callback = EarlyStopping(monitor="knn_F1/val", min_delta=0.00, patience=5, verbose=True, mode='max')
     checkpoint_callback = ModelCheckpoint(
-        filename="/home/andrew/go_metric/checkpoints/dgp_bottleneck_conv_dgp_data",
+        filename="/home/andrew/go_metric/checkpoints/bottleneck",
         verbose=True,
         monitor="knn_F1/val"
     )
 
-    trainer = pl.Trainer(gpus=[1,], max_epochs=100, profiler='simple', 
-        callbacks=[early_stop_callback, checkpoint_callback])    # Train the model
+    trainer = pl.Trainer(gpus=[1,], max_epochs=100, callbacks=[early_stop_callback, checkpoint_callback])
 
     trainer.fit(model, train_loader, val_loader)
