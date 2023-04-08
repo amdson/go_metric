@@ -62,6 +62,13 @@ class ProtBertBFDClassifier(pl.LightningModule):
             nn.Linear(self.encoder_features*2, self.h.num_classes),
         )
 
+        # self.classification_head = nn.Sequential(
+        #     nn.Linear(self.encoder_features*2, 128), 
+        #     nn.Linear(128, 1024), 
+        #     nn.ReLU(), 
+        #     nn.Linear(1024, self.h.num_classes)
+        # )
+
     def __build_loss(self):
         """ Initializes the loss function/s. """
         self._loss = nn.BCEWithLogitsLoss()
@@ -69,7 +76,7 @@ class ProtBertBFDClassifier(pl.LightningModule):
     def unfreeze_encoder(self, frozen_layers=14) -> None:
         """ un-freezes the encoder layer. """
         if self._frozen:
-            log.info(f"\n-- Encoder model fine-tuning")
+            print(f"\n-- Encoder model fine-tuning")
             # for param in self.ProtBertBFD.parameters():
             #     param.requires_grad = True
             for n, param in self.ProtBertBFD.named_parameters():
@@ -136,6 +143,7 @@ class ProtBertBFDClassifier(pl.LightningModule):
             if pool_mean_sqrt:
                 output_vectors.append(sum_embeddings / torch.sqrt(sum_mask))
 
+        #output_vector = torch.stack(output_vectors, -1).sum(dim=-1)
         output_vector = torch.cat(output_vectors, 1)
         return output_vector
     
@@ -159,14 +167,6 @@ class ProtBertBFDClassifier(pl.LightningModule):
         return self.classification_head(pooling)
 
     def loss(self, predictions, targets) -> torch.tensor:
-        """
-        Computes Loss value according to a loss function.
-        :param predictions: model specific output. Must contain a key 'logits' with
-            a tensor [batch_size x 1] with model predictions
-        :param labels: Label values [batch_size]
-        Returns:
-            torch.tensor with loss value.
-        """
         return self._loss(predictions, targets)
 
     def training_step(self, batch: tuple, batch_nb: int, *args, **kwargs) -> dict:
@@ -321,6 +321,6 @@ class ProtBertBFDClassifier(pl.LightningModule):
             "--gradient_clipping", default=1.0, type=float, help="Global norm gradient clipping"
         )
         parser.add_argument(
-            "--weight_decay", default=0.01, type=float, help="Weight decay per train step."
+            "--weight_decay", default=0.00, type=float, help="Weight decay per train step."
         )
         return parser
