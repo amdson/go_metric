@@ -3,9 +3,10 @@ import torch.nn as nn
 import numpy as np
 import pytorch_lightning as pl
 from sklearn.metrics import f1_score
-from go_metric.utils import tuple_type
+from go_metric.utils import tuple_type, tuple_cat, tuple_stack
 from go_metric.metric_loss import metric_logits_loss, multilabel_triplet_loss
 from go_metric.multilabel_knn import embedding_knn
+
 from scipy import sparse
 
 #Possible improvements
@@ -83,10 +84,11 @@ class DPGModule(pl.LightningModule):
     def __init__(self, vocab_size=30, num_classes=865, max_len=1024, 
                     max_kernel=129, num_filters=512, bottleneck_dim=128, hidden_dims=(2048, 2048), bottleneck_regularization=0.0, 
                     bottleneck_layers=1, classification_layers=1, metric_loss_weight=1.0, label_loss_weight=10.0, label_loss_decay=0.94,
-                    sim_margin=3.0, tmargin=1.0, sim_type='dot', gradient_clipping_decay=1.0, batch_size=256,
+                    sim_margin=3.0, tmargin=1.0, sim_type='dot', gradient_clipping_decay=1.0, batch_size=256, batch_partitions=8, 
                     learning_rate=5e-4, lr_decay_rate= 0.9997, term_ic=None, git_hash=None):
         super().__init__()
         self.save_hyperparameters()
+        self.automatic_optimization = False
         self.term_ic = term_ic
         self.model = DPGConvSeq(vocab_size, bottleneck_dim, list(hidden_dims), num_classes, num_filters, max_kernel, max_len)
         self.lr = learning_rate
@@ -98,6 +100,8 @@ class DPGModule(pl.LightningModule):
         self.label_loss_weight = label_loss_weight
         self.label_loss_decay = label_loss_decay
         self.loss = nn.BCEWithLogitsLoss()
+        self.batch_size = batch_size
+        self.batch_partitions = batch_partitions
 
     def forward(self, x, return_embedding=False):
         return self.model(x, return_embedding)
@@ -106,23 +110,53 @@ class DPGModule(pl.LightningModule):
         print('\n')
 
     def training_step(self, batch, batch_idx):
-        # training_step defined the train loop.
+        opt = self.optimizers()
+        opt.zero_grad()
+        
         x, y = batch["seq"], batch["labels"] 
         y = y.float()
-        logits, embedding = self.model.forward(x, return_embedding=True)
-        label_loss = self.loss(logits, y)
         term_ic = self.term_ic.to(x.device)
+
         # metric_loss, num_triplets = multilabel_triplet_loss(embedding, y, label_weights=term_ic, sim_margin=self.sim_margin, tmargin=self.tmargin, sim_type=self.sim_type)
-        metric_loss = metric_logits_loss(embedding, y, label_weights=term_ic, temperature=1)
-        emb_loss = self.bottleneck_regularization * torch.square(embedding).sum(axis=1).mean()
-        loss = self.label_loss_weight*label_loss + self.metric_loss_weight*metric_loss + emb_loss
-        # loss = label_loss
+        # metric_loss = metric_logits_loss(embedding, y, label_weights=term_ic, temperature=1)
+        # emb_loss = self.bottleneck_regularization * torch.square(embedding).sum(axis=1).mean()
+        # loss = self.label_loss_weight*label_loss + self.metric_loss_weight*metric_loss + emb_loss
+
+        #Get loss grad for large batch
+        partition_dim = x.shape[0] // self.batch_partitions
+        with torch.no_grad():
+            m_l = []
+            for b in range(self.batch_partitions):
+                x_part = x[b*partition_dim:(b+1)*partition_dim]
+                m_l.append(self.model.forward(x_part, return_embedding=True))
+        logits, embedding = tuple_cat(m_l)
+        embedding.requires_grad = True
+        embedding.retain_grad()
+        metric_loss = metric_logits_loss(embedding, y[:self.batch_partitions*partition_dim], label_weights=term_ic, temperature=1)
+        metric_loss.backward()
+        loss_grad = embedding.grad
+
+        loss_l = []
+        for b in range(self.batch_partitions):
+            x_part = x[b*partition_dim:(b+1)*partition_dim]
+            logits, emb_part = self.model.forward(x_part, return_embedding=True)
+            emb_part.backward(gradient=loss_grad[b*partition_dim:(b+1)*partition_dim], retain_graph=True)
+            label_loss = self.loss(logits, y[b*partition_dim:(b+1)*partition_dim])
+            emb_loss = self.bottleneck_regularization * torch.square(emb_part).sum(axis=1).mean()
+            (label_loss + emb_loss).backward(retain_graph=True)
+            loss_l.append((label_loss.detach(), emb_loss.detach()))
+
+        label_loss, emb_loss = tuple_stack(loss_l)
+        label_loss, emb_loss = label_loss.mean(), emb_loss.mean()
+        opt.step()
+
         # Logging to TensorBoard by default
-        self.log('loss/train', loss)
+        # self.log('loss/train', loss)
+        self.log("embedding_loss/train", emb_loss)
         self.log('label_loss/train', label_loss, prog_bar=True)
         self.log('metric_loss/train', metric_loss, prog_bar=True)
         # self.log('batch_triplets', num_triplets)
-        return {"loss": loss, "embeddings":embedding.detach(), "labels": sparse.csr_matrix(batch["labels"].cpu().numpy())}
+        return {"embeddings":embedding.detach(), "labels": sparse.csr_matrix(batch["labels"].cpu().numpy())}
     
     def training_epoch_end(self, outputs):
         labels, embeddings = [], []
@@ -145,16 +179,19 @@ class DPGModule(pl.LightningModule):
         # training_step defined the train loop.
         x, y = batch["seq"], batch["labels"] 
         y = y.float()
-        logits, embedding = self.model.forward(x, return_embedding=True)
-        label_loss = self.loss(logits, y)
-        metric_loss, num_triplets = multilabel_triplet_loss(embedding, y, label_weights=self.term_ic, sim_margin=3.0, tmargin=1.0)
-        loss = label_loss + metric_loss
-        # Logging to TensorBoard by default
-        self.log('loss/val', loss)
-        self.log('label_loss/val', label_loss)
-        self.log('metric_loss/val', metric_loss)
-        output = {"loss": loss, "label_loss": label_loss, "metric_loss": metric_loss, 
-                "labels": batch["labels"], "logits": logits, "embeddings": embedding}
+        with torch.no_grad():
+            term_ic = self.term_ic.to(x.device)
+            logits, embedding = self.model.forward(x, return_embedding=True)
+            label_loss = self.loss(logits, y)
+            # metric_loss, num_triplets = multilabel_triplet_loss(embedding, y, label_weights=self.term_ic, sim_margin=3.0, tmargin=1.0)
+            metric_loss = metric_logits_loss(embedding, y, label_weights=term_ic, temperature=1)
+            loss = label_loss + metric_loss
+            # Logging to TensorBoard by default
+            self.log('loss/val', loss)
+            self.log('label_loss/val', label_loss)
+            self.log('metric_loss/val', metric_loss)
+            output = {"loss": loss, "label_loss": label_loss, "metric_loss": metric_loss, 
+                    "labels": batch["labels"], "logits": logits, "embeddings": embedding}
         return output
 
     def validation_epoch_end(self, outputs):
@@ -188,7 +225,8 @@ class DPGModule(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group("LitModel")
         parser.add_argument('--vocab_size', type=int, default=30)
-        parser.add_argument('--batch_size', type=int, default=256)
+        parser.add_argument('--batch_size', type=int, default=2048)
+        parser.add_argument('--batch_partitions', type=int, default=8)
         parser.add_argument('--max_len', type=int, default=1024)
 
         parser.add_argument('--num_classes', type=int, default=865)

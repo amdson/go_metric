@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
-from go_metric.models.bottleneck_dpg_conv import DPGModule
+from go_metric.models.bottleneck_gb import DPGModule
 from go_metric.data_utils import *
 from go_bench.metrics import calculate_ic, ic_mat
 from argparse import ArgumentParser
@@ -33,15 +33,15 @@ print("model hparams", model_hparams)
 
 if __name__ == "__main__":
     train_path = "/home/andrew/go_metric/data/go_bench"
-    # train_dataset = BertSeqDataset.from_pickle(f"{train_path}/train.pkl")
-    # val_dataset = BertSeqDataset.from_pickle(f"{train_path}/val.pkl")
+    train_dataset = BertSeqDataset.from_pickle(f"{train_path}/train.pkl")
+    val_dataset = BertSeqDataset.from_pickle(f"{train_path}/val.pkl")
 
-    train_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/train_data.pkl")
-    val_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/test_data.pkl")
+    # train_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/train_data.pkl")
+    # val_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/test_data.pkl")
 
     collate_seqs = get_bert_seq_collator(max_length=hparams.max_len, add_special_tokens=False)
-    dataloader_params = {"shuffle": True, "batch_size": 256, "collate_fn":collate_seqs}
-    val_dataloader_params = {"shuffle": False, "batch_size": 256, "collate_fn":collate_seqs}
+    dataloader_params = {"shuffle": True, "batch_size": hparams.batch_size, "collate_fn":collate_seqs}
+    val_dataloader_params = {"shuffle": False, "batch_size": hparams.batch_size, "collate_fn":collate_seqs}
 
     train_loader = DataLoader(train_dataset, **dataloader_params, num_workers=6)
     val_loader = DataLoader(val_dataset, **val_dataloader_params)
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     early_stop_callback = EarlyStopping(monitor="knn_F1/val", min_delta=0.00, patience=10, 
                                         verbose=True, mode='max', check_on_train_epoch_end=True)
     checkpoint_callback = ModelCheckpoint(
-        filename="/home/andrew/go_metric/checkpoints/dpg-bottleneck",
+        filename="/home/andrew/go_metric/checkpoints/dpg-gb-bottleneck",
         verbose=True,
         monitor="knn_F1/val",
         save_on_train_epoch_end=True,

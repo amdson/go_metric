@@ -14,10 +14,12 @@ parser = pl.Trainer.add_argparse_args(parser)
 hparams = parser.parse_args()
 
 print("got hparams", hparams)
-train_path = "/home/andrew/go_metric/data/go_bench"
+
 if __name__ == "__main__":
     # train_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/train_data.pkl")
     # val_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/test_data.pkl")
+
+    train_path = "/home/andrew/go_metric/data/go_bench"
     train_dataset = BertSeqDataset.from_pickle(f"{train_path}/train.pkl")
     val_dataset = BertSeqDataset.from_pickle(f"{train_path}/val.pkl")
 
@@ -30,9 +32,9 @@ if __name__ == "__main__":
 
     hparams.num_classes = train_dataset[0]['labels'].shape[0]
     model = ProtBertBFDClassifier(hparams)
-
+    
     early_stop_callback = EarlyStopping(monitor='F1/val', min_delta=0.00, patience=3, verbose=True, mode='max')
-    checkpoint_callback = ModelCheckpoint(filename="/home/andrew/go_metric/checkpoints/bert_emb", verbose=True, monitor='F1/val')
+    checkpoint_callback = ModelCheckpoint(filename="/home/andrew/go_metric/checkpoints/bert_emb_128", verbose=True, monitor='F1/val', mode='max')
     trainer = pl.Trainer.from_argparse_args(hparams, accelerator='gpu', devices=[1], max_epochs=100, profiler='simple',
                                              callbacks=[early_stop_callback, checkpoint_callback])
     trainer.fit(model, train_loader, val_loader)

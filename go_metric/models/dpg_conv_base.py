@@ -82,7 +82,7 @@ class DPGConvSeq(nn.Module):
 class DPGModule(pl.LightningModule):
     def __init__(self, vocab_size=30, num_classes=865, max_len=1024, 
                     max_kernel=129, num_filters=512, bottleneck_dim=128, hidden_dims=(2048, 2048), bottleneck_regularization=0.0, 
-                    bottleneck_layers=1, classification_layers=1, metric_loss_weight=1.0, label_loss_weight=10.0, label_loss_decay=0.94,
+                    bottleneck_layers=1, classification_layers=1, label_loss_weight=10.0, label_loss_decay=0.94,
                     sim_margin=3.0, tmargin=1.0, sim_type='dot', gradient_clipping_decay=1.0, batch_size=256,
                     learning_rate=5e-4, lr_decay_rate= 0.9997, term_ic=None, git_hash=None):
         super().__init__()
@@ -90,11 +90,7 @@ class DPGModule(pl.LightningModule):
         self.term_ic = term_ic
         self.model = DPGConvSeq(vocab_size, bottleneck_dim, list(hidden_dims), num_classes, num_filters, max_kernel, max_len)
         self.lr = learning_rate
-        self.sim_type = sim_type
-        self.sim_margin = sim_margin
-        self.tmargin = tmargin
         self.bottleneck_regularization = bottleneck_regularization
-        self.metric_loss_weight = metric_loss_weight
         self.label_loss_weight = label_loss_weight
         self.label_loss_decay = label_loss_decay
         self.loss = nn.BCEWithLogitsLoss()
@@ -111,58 +107,31 @@ class DPGModule(pl.LightningModule):
         y = y.float()
         logits, embedding = self.model.forward(x, return_embedding=True)
         label_loss = self.loss(logits, y)
-        term_ic = self.term_ic.to(x.device)
-        # metric_loss, num_triplets = multilabel_triplet_loss(embedding, y, label_weights=term_ic, sim_margin=self.sim_margin, tmargin=self.tmargin, sim_type=self.sim_type)
-        metric_loss = metric_logits_loss(embedding, y, label_weights=term_ic, temperature=1)
         emb_loss = self.bottleneck_regularization * torch.square(embedding).sum(axis=1).mean()
-        loss = self.label_loss_weight*label_loss + self.metric_loss_weight*metric_loss + emb_loss
+        loss = label_loss + emb_loss
         # loss = label_loss
         # Logging to TensorBoard by default
         self.log('loss/train', loss)
-        self.log('label_loss/train', label_loss, prog_bar=True)
-        self.log('metric_loss/train', metric_loss, prog_bar=True)
-        # self.log('batch_triplets', num_triplets)
-        return {"loss": loss, "embeddings":embedding.detach(), "labels": sparse.csr_matrix(batch["labels"].cpu().numpy())}
-    
-    def training_epoch_end(self, outputs):
-        labels, embeddings = [], []
-        for output in outputs:
-            labels.append(output["labels"])
-            embeddings.append(output["embeddings"])
-        self.train_labels = sparse.vstack(labels)
-        self.train_embeddings = torch.cat(embeddings, dim=0)
 
-        train_embeddings = self.train_embeddings.to(self.device)
-        val_embeddings = self.val_embeddings.to(self.device)
-        val_preds = embedding_knn(train_embeddings, val_embeddings, self.train_labels, k=3).toarray() >= 0.3
-        knn_f1 = f1_score(self.val_labels, val_preds, average='micro')
-        self.log('knn_F1/val', knn_f1, prog_bar=True)
-        self.train_embeddings, self.train_labels, self.val_embeddings, self.val_labels = None, None, None, None
-        self.label_loss_weight *= self.label_loss_decay
-        return super().training_epoch_end(outputs)
+        # self.log('batch_triplets', num_triplets)
+        return loss
         
     def validation_step(self, batch, batch_idx):
         # training_step defined the train loop.
         x, y = batch["seq"], batch["labels"] 
         y = y.float()
-        logits, embedding = self.model.forward(x, return_embedding=True)
-        label_loss = self.loss(logits, y)
-        metric_loss, num_triplets = multilabel_triplet_loss(embedding, y, label_weights=self.term_ic, sim_margin=3.0, tmargin=1.0)
-        loss = label_loss + metric_loss
+        logits = self.model.forward(x)
+        loss = self.loss(logits, y)
         # Logging to TensorBoard by default
         self.log('loss/val', loss)
-        self.log('label_loss/val', label_loss)
-        self.log('metric_loss/val', metric_loss)
-        output = {"loss": loss, "label_loss": label_loss, "metric_loss": metric_loss, 
-                "labels": batch["labels"], "logits": logits, "embeddings": embedding}
+        output = {"loss": loss, "labels": batch["labels"], "logits": logits}
         return output
 
     def validation_epoch_end(self, outputs):
-        labels, logits, embeddings = [], [], []
+        labels, logits = [], []
         for output in outputs:
             labels.append(output["labels"])
             logits.append(output["logits"])
-            embeddings.append(output["embeddings"])
         labels = torch.cat(labels, dim=0).cpu().numpy()
         logits = torch.cat(logits, dim=0)
 
@@ -170,8 +139,6 @@ class DPGModule(pl.LightningModule):
         f1 = f1_score(labels, preds, average='micro')
         self.log('F1/val', f1, prog_bar=True)
 
-        val_embeddings = torch.cat(embeddings, dim=0)
-        self.val_embeddings = val_embeddings
         self.val_labels = labels
         return super().validation_epoch_end(outputs)
 
@@ -205,7 +172,6 @@ class DPGModule(pl.LightningModule):
         parser.add_argument('--sim_margin', type=float, default=3.0)
         parser.add_argument('--tmargin', type=float, default=0.95)
 
-        parser.add_argument('--metric_loss_weight', type=float, default=1.0)
         parser.add_argument('--label_loss_weight', type=float, default=10.0)
         parser.add_argument("--label_loss_decay", type=float, default=1.0)
         parser.add_argument('--learning_rate', type=float, default=5e-4)
