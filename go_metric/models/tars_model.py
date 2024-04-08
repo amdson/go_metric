@@ -37,7 +37,7 @@ class TARSModel(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(embedding_dim, n_head, dim_feedforward=embedding_dim*4, 
                                          dropout=0.1, activation='relu', batch_first=True, norm_first=False)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.classifier_layer = nn.Linear(2*embedding_dim, 2)
+        self.classifier_layer = nn.Linear(2*embedding_dim, 1)
         self.vocab_size = vocab_size
 
     def forward(self, x, mask, term_emb):
@@ -57,48 +57,53 @@ class TARSModel(nn.Module):
         return logits
     
 class TARSModule(pl.LightningModule):
-    def __init__(self, term_emb=None, vocab_size=30, embedding_dim=256, term_size = 50, max_len = 1024, batch_size=256,
+    def __init__(self, term_emb=None, neg_weight=None, vocab_size=30, embedding_dim=256, term_size = 50, max_len = 1024, batch_size=256,
                     learning_rate=5e-4, git_hash=None):
         super().__init__()
         self.save_hyperparameters()
         self.term_emb = term_emb
+        self.neg_weight = neg_weight
         self.model = TARSModel(vocab_size, embedding_dim, term_size)
         self.lr = learning_rate
-        self.loss = nn.CrossEntropyLoss()
+        self.loss = nn.BCEWithLogitsLoss(reduction='none')
 
     def forward(self, x, mask, term_emb):
         return self.model(x, mask, term_emb)
     
     def on_fit_start(self) -> None:
         self.term_emb = self.term_emb.to(self.device)
+        self.neg_weight = self.neg_weight.to(self.device)
+
 
     def on_train_epoch_start(self):
         print('\n')
 
     def training_step(self, batch, batch_idx):
         # training_step defined the train loop.
-        x, y, mask = batch["seq"], batch["labels"].long(), batch['mask']
+        x, y, mask = batch["seq"], batch["labels"].float(), batch['mask']
         target_term = batch['target_term'] #(B,)
         term_emb = self.term_emb[target_term, :]
-
-        logits = self.model.forward(x, ~mask, term_emb) #(B, 2)
+        term_weight = self.neg_weight[target_term]*(1-y) + y #Weight of 1 for pos samples, upsampled weight for neg
+        logits = self.model.forward(x, ~mask, term_emb) #(B, 1)
         # print(logits.shape, y.shape)
         # print("y", y)
         loss = self.loss(logits, y)
+        loss = (loss*term_weight).sum()
         # Logging to TensorBoard by default
         self.log('loss/train', loss, prog_bar=True)
         return {"loss": loss}
         
     def validation_step(self, batch, batch_idx):
         # training_step defined the train loop.
-        x, y, mask = batch["seq"], batch["labels"].long(), batch['mask']
+        x, y, mask = batch["seq"], batch["labels"].float(), batch['mask']
         target_term = batch['target_term'] #(B,)
         term_emb = self.term_emb[target_term, :]
-
-        logits = self.model.forward(x, ~mask, term_emb) #(B, 2)
+        term_weight = self.neg_weight[target_term]*(1-y) + y #Weight of 1 for pos samples, upsampled weight for neg
+        logits = self.model.forward(x, ~mask, term_emb) #(B, 1)
         # print(logits.shape, y.shape)
         # print("y", y)
         loss = self.loss(logits, y)
+        loss = (loss*term_weight).sum()
         # loss = 0
         # Logging to TensorBoard by default
         self.log('loss/val', loss, prog_bar=True)
@@ -118,7 +123,7 @@ class TARSModule(pl.LightningModule):
         parser = parent_parser.add_argument_group("LitModel")
         parser.add_argument('--vocab_size', type=int, default=30)
         parser.add_argument('--embedding_dim', type=int, default=256)
-        parser.add_argument('--batch_size', type=int, default=16)
+        parser.add_argument('--batch_size', type=int, default=48)
         parser.add_argument('--max_len', type=int, default=1024)
         parser.add_argument('--learning_rate', type=float, default=5e-4)
         # parser.add_argument('--lr_decay_rate', type=float, default=0.9997)

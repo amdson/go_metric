@@ -29,11 +29,10 @@ val_loader = DataLoader(val_dataset, **val_dataloader_params, num_workers=6)
 test_loader = DataLoader(test_dataset, **val_dataloader_params, num_workers=6)
 
 from go_metric.models.bert_emb import ProtBertBFDClassifier
-import pickle 
-with open("checkpoints/bert_emb_hparams.pkl", "rb") as f:
+import pickle
+with open("checkpoints/bert_emb_sample_hparams.pkl", "rb") as f:
     hparams = pickle.load(f)
-    hparams.num_classes = 865
-model = ProtBertBFDClassifier.load_from_checkpoint("checkpoints/bert_emb.ckpt", hparams=hparams)
+model = ProtBertBFDClassifier.load_from_checkpoint("checkpoints/bert_emb_sample.ckpt", hparams=hparams)
 model.eval()
 device = torch.device('cuda:1')
 model.to(device)
@@ -47,7 +46,7 @@ def get_finetune_embeddings(model, dataset, device):
             prot_ids.extend(inputs['prot_id'])
             tokenized_sequences = inputs["seq"].to(device)
             attention_mask = inputs["mask"].to(device)
-
+            
             word_embeddings = model.ProtBertBFD(tokenized_sequences,
                                            attention_mask)[0]
             embedding = model.pool_strategy({"token_embeddings": word_embeddings,
@@ -62,13 +61,13 @@ def get_finetune_embeddings(model, dataset, device):
 
 train_ids, train_embeddings = get_finetune_embeddings(model, train_dataset, device)
 emb_dict = {"prot_id": train_ids, "embedding": train_embeddings}
-with open("emb/new_finetune_train_emb.pkl", "wb") as f:
+with open("emb/sample_finetune_train_emb.pkl", "wb") as f:
     pickle.dump(emb_dict, f)
 val_ids, val_embeddings = get_finetune_embeddings(model, val_dataset, device)
 emb_dict = {"prot_id": val_ids, "embedding": val_embeddings}
-with open("emb/new_finetune_val_emb.pkl", "wb") as f:
+with open("emb/sample_finetune_val_emb.pkl", "wb") as f:
     pickle.dump(emb_dict, f)
 test_ids, test_embeddings = get_finetune_embeddings(model, test_dataset, device)
 emb_dict = {"prot_id": test_ids, "embedding": test_embeddings}
-with open("emb/new_finetune_test_emb.pkl", "wb") as f:
+with open("emb/sample_finetune_test_emb.pkl", "wb") as f:
     pickle.dump(emb_dict, f)

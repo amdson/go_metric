@@ -16,11 +16,9 @@ hparams = parser.parse_args()
 print("got hparams", hparams)
 train_path = "/home/andrew/go_metric/data/go_bench"
 if __name__ == "__main__":
-    # train_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/train_data.pkl")
-    # val_dataset = BertSeqDataset.from_dgp_pickle("../dgp_data/data/terms.pkl", "../dgp_data/data/test_data.pkl")
     train_dataset = BertSeqDataset.from_pickle(f"{train_path}/train.pkl")
     val_dataset = BertSeqDataset.from_pickle(f"{train_path}/val.pkl")
-
+    
     collate_seqs = get_bert_seq_collator(max_length=hparams.max_length, add_special_tokens=True)
     dataloader_params = {"shuffle": True, "batch_size": 12, "collate_fn":collate_seqs}
     val_dataloader_params = {"shuffle": False, "batch_size": 24, "collate_fn":collate_seqs}

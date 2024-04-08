@@ -1,2 +1,4 @@
-1. Add KNN prediction to bottleneck validation. 
-2. 
+Build a dataset with both CAFA methodology and my methodology. Compare F1 score for Blast, MLP, and Rostlab fine-tuning. 
+
+Get protein neighbors in embedding space. 
+

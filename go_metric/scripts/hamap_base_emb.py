@@ -4,7 +4,42 @@ from torch.utils.data import DataLoader
 from go_metric.data_utils import *
 from transformers import BertModel, BertTokenizer
 import re
-device = torch.device('cuda:1')
+from Bio import AlignIO
+import os
+
+hamas_families = []
+hamas_sequences = []
+for i, prot_fam in enumerate(os.listdir("data/hamap_alignments/")):
+    family_seq = list(AlignIO.read(f"data/hamap_alignments/{prot_fam}", "fasta"))[:512]
+    hamas_sequences.extend(family_seq)
+    hamas_families.extend([prot_fam]*len(family_seq))
+    if(i > 500):
+        break
+
+# Gen hamap embeddings
+import torch
+from go_metric.data_utils import *
+from torch.utils.data import DataLoader
+
+class BERTHamasData(data.Dataset):
+    'Characterizes a dataset for PyTorch'
+    def __init__(self, prot_names, prot_fam, sequences):
+        self.prot_names = prot_names
+        self.sequences = sequences #A list of strings representing proteins
+        self.prot_fam = prot_fam
+    def __len__(self):
+        return len(self.sequences)
+    def __getitem__(self, index):
+        X = self.sequences[index]
+        prot_id = self.prot_names[index]
+        prot_fam = self.prot_fam[index]
+        return {"seq": X, "prot_id": prot_id, "prot_fam": prot_fam}
+
+hamap_dataset = BERTHamasData([seq.id for seq in hamas_sequences], hamas_families,
+                              [" ".join(str(seq.seq).replace('.', '').replace('-', '')) for seq in hamas_sequences])
+
+
+device = torch.device('cuda:2')
 
 bert_tokenizer = BertTokenizer.from_pretrained("Rostlab/prot_bert_bfd", do_lower_case=False)
 def seq_collator(data_dict_list):
@@ -15,12 +50,7 @@ def seq_collator(data_dict_list):
                                                 truncation=True,
                                                 return_attention_mask=True,
                                                 max_length=2400)
-    return {"input_ids": inputs['input_ids'], "labels": sample['labels'], 
-            "prot_ids": sample["prot_id"], 'attention_mask': inputs['attention_mask']}
-
-train_path = "/home/andrew/go_metric/data/go_bench"
-train_dataset = BertSeqDataset.from_pickle(f"{train_path}/train.pkl")
-val_dataset = BertSeqDataset.from_pickle(f"{train_path}/val.pkl")
+    return {"input_ids": inputs['input_ids'], "prot_ids": sample["prot_id"], 'attention_mask': inputs['attention_mask']}
 
 model = BertModel.from_pretrained("Rostlab/prot_bert_bfd")
 model.to(device)
@@ -44,14 +74,9 @@ def embed_dataset(dataset, model):
                 embedding_l.append(embedding)
         if(len(embedding_l) % 1024 == 0):
             print(len(embedding_l)/len(dataset))
-            # break
-    res_dict = {"prot_ids": dataset.prot_names, "embeddings": np.vstack(embedding_l)}
+    res_dict = {"prot_id": dataset.prot_names, "embeddings": np.vstack(embedding_l)}
     return res_dict
 
-train_emb = embed_dataset(train_dataset, model)
-import pickle
-with open("eval/predictions/protbert_train_emb.pkl", "wb") as f:
-    pickle.dump(train_emb, f)
-val_emb = embed_dataset(val_dataset, model)
-with open("eval/predictions/protbert_val_emb.pkl", "wb") as f:
-    pickle.dump(val_emb, f)
+hamap_dict = embed_dataset(hamap_dataset, model)
+with open("emb/base_hamap_emb.pkl", "wb") as f:
+    pickle.dump(hamap_dict, f)

@@ -1,25 +1,64 @@
 import torch
 from torch import nn
 
+def jaccard_mat(lA, lB, term_ic):
+    i = (lA*term_ic) @ lB.T
+    max_dot = term_ic.sum()
+    nlA = 1-lA
+    nlB = 1-lB
+    u = (max_dot - (nlA*term_ic)@nlB.T) + 1
+    j = i.divide(u)
+    return j
+
 def get_all_triplets(sim_score, sim_margin=3.0):
     matches = sim_score > sim_margin
     diffs = sim_score <= sim_margin
     triplets = matches.unsqueeze(2) * diffs.unsqueeze(1)
     return torch.where(triplets)
 
-def multilabel_triplet_loss(embeddings, labels, label_weights=None, sim_margin=1.0, tmargin=1.5):
+def multilabel_triplet_loss(embeddings, labels, label_weights=None, sim_margin=1.0, tmargin=1.5, sim_type='dot'):
     if(label_weights is None):
         label_weights = torch.ones((1, labels.shape[1]), device=labels.device)
     else:
         label_weights = label_weights.to(labels.device)
+
+    if(sim_type=='dot'):
+        sim_score = labels.multiply(label_weights) @ labels.T
+    elif(sim_type=='jaccard'):
+        sim_score = jaccard_mat(labels, labels, label_weights)
+
     emb_dist = torch.cdist(embeddings, embeddings)
-    sim_score = labels.multiply(label_weights) @ labels.T
     a, p, n = get_all_triplets(sim_score, sim_margin=sim_margin)
     # print(a.shape)
     pos_pairs = emb_dist[a, p]
     neg_pairs = emb_dist[a, n]
     triplet_margin = neg_pairs - pos_pairs
-    return torch.mean(torch.relu(tmargin - triplet_margin))
+    return torch.mean(torch.relu(tmargin - triplet_margin)), a.shape[0]
+
+def metric_logits_loss(embeddings, labels, label_weights=None, temperature=1.0):
+    """
+    embeddings: (batch_size x emb_dim) tensor
+    labels: (batch_size x labels) tensor
+    """
+    bce_logits_loss = torch.nn.BCEWithLogitsLoss(weight=label_weights)
+    emb_dist = torch.cdist(embeddings, embeddings)**2
+    diag = torch.eye(embeddings.shape[0], dtype=torch.bool, device=embeddings.device)
+    exp_logits = torch.exp(-emb_dist / temperature)*(~diag)
+    logit_sum = exp_logits.sum(dim=1, keepdim=True)
+    label_est = torch.log((exp_logits) @ labels + 1e-7) - torch.log(logit_sum)
+    return bce_logits_loss(label_est, labels.float())
+
+def qdb_metric_logits_loss(eq, lq, edb, ldb, label_weights=None, temperature=1.0):
+    """
+    embeddings: (batch_size x emb_dim) float tensor
+    labels: (batch_size x labels) float tensor
+    """
+    bce_logits_loss = torch.nn.BCEWithLogitsLoss(weight=label_weights)
+    emb_dist = torch.cdist(eq, edb)**2
+    exp_logits = torch.exp(-emb_dist / temperature)
+    logit_sum = exp_logits.sum(dim=1, keepdim=True)
+    label_est = torch.log((exp_logits) @ ldb + 1e-7) - torch.log(logit_sum)
+    return bce_logits_loss(label_est, lq)
 
 def contrastive_softmax_loss(embeddings, labels, label_weights=None, temperature=1.0):
     """

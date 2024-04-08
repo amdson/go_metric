@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch import optim
 from sklearn.metrics import f1_score
 import pytorch_lightning as pl
-from transformers import BertTokenizer, BertModel
+from transformers import AutoTokenizer, AutoModel
 
 import pandas as pd
 import os
@@ -13,7 +13,7 @@ from collections import OrderedDict
 import logging as log
 import numpy as np
 
-class ProtBertBFDClassifier(pl.LightningModule):
+class ESMBERTClassifier(pl.LightningModule):
     """
     # https://github.com/minimalist-nlp/lightning-text-classification.git
     
@@ -28,67 +28,39 @@ class ProtBertBFDClassifier(pl.LightningModule):
     }
     """
     def __init__(self, hparams) -> None:
-        super(ProtBertBFDClassifier, self).__init__()
+        super(ESMBERTClassifier, self).__init__()
         self.h = hparams
-
-        self.model_name = "Rostlab/prot_bert_bfd"
-
+        self.model_name = self.h.model_name
+        self.save_hyperparameters()
         # build model
         self.__build_model()
 
         # Loss criterion initialization.
         self.__build_loss()
-        self.freeze_encoder()
-        if self.h.nr_frozen_epochs <= 0:
-            self.unfreeze_encoder() #Unfreeze layers that should be trained
-        else:
-            self._frozen = False
+        # self.freeze_encoder()
+        # if self.h.nr_frozen_epochs <= 0:
+        #     self.unfreeze_encoder() #Unfreeze layers that should be trained
+        # else:
+        #     self._frozen = False
         self.nr_frozen_epochs = self.h.nr_frozen_epochs
         self._train_dataset_generated = False
 
     def __build_model(self) -> None:
         """ Init BERT model + tokenizer + classification head."""
-        self.ProtBertBFD = BertModel.from_pretrained(self.model_name)
-        self.encoder_features = 1024
-
+        self.model = AutoModel.from_pretrained(self.model_name)
+        print(self.model)
+        self.encoder_features = self.model.config.hidden_size
         # Tokenizer
-        self.tokenizer = BertTokenizer.from_pretrained(self.model_name, do_lower_case=False)
-
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, do_lower_case=False)
         # Classification head
         self.classification_head = nn.Sequential(
             nn.Linear(self.encoder_features, self.h.num_classes),
         )
-        # self.classification_head = nn.Sequential(
-        #     nn.Linear(self.encoder_features*2, 128), 
-        #     nn.Linear(128, 1024), 
-        #     nn.ReLU(), 
-        #     nn.Linear(1024, self.h.num_classes)
-        # )
-
+        
     def __build_loss(self):
         """ Initializes the loss function/s. """
         self._loss = nn.BCEWithLogitsLoss()
 
-    def unfreeze_encoder(self, frozen_layers=14) -> None:
-        """ un-freezes the encoder layer. """
-        if self._frozen:
-            print(f"\n-- Encoder model fine-tuning")
-            # for param in self.ProtBertBFD.parameters():
-            #     param.requires_grad = True
-            for n, param in self.ProtBertBFD.named_parameters():
-                if("layer" in n):
-                    if(int(re.search("layer\.(\d+)", n).group(1)) >= frozen_layers):
-                        param.requires_grad = True
-                elif("pooler" in n):
-                    param.requires_grad = True
-            self._frozen = False
-
-    def freeze_encoder(self) -> None:
-        """ freezes the encoder layer. """
-        for param in self.ProtBertBFD.parameters():
-            param.requires_grad = False
-        self._frozen = True
-    
     # https://github.com/UKPLab/sentence-transformers/blob/eb39d0199508149b9d32c1677ee9953a84757ae4/sentence_transformers/models/Pooling.py
     def pool_strategy(self, features,
                       pool_cls=True, pool_max=True, pool_mean=True,
@@ -137,7 +109,7 @@ class ProtBertBFDClassifier(pl.LightningModule):
         # input_ids = torch.tensor(input_ids, device=self.device)
         # attention_mask = torch.tensor(attention_mask,device=self.device)
 
-        word_embeddings = self.ProtBertBFD(input_ids,
+        word_embeddings = self.model(input_ids,
                                            attention_mask)[0]
 
         pooling = self.pool_strategy({"token_embeddings": word_embeddings,
@@ -145,6 +117,21 @@ class ProtBertBFDClassifier(pl.LightningModule):
                                       "attention_mask": attention_mask,
                                       }, pool_max=False, pool_mean_sqrt=False)
         return self.classification_head(pooling)
+    
+    def forward_emb(self, input_ids, token_type_ids, attention_mask):
+        """ Usual pytorch forward function.
+        :param tokens: text sequences [batch_size x src_seq_len]
+        :param lengths: source lengths [batch_size]
+        Returns:
+            Dictionary with model outputs (e.g: logits)
+        """
+        word_embeddings = self.model(input_ids,
+                                           attention_mask)[0]
+        pooling = self.pool_strategy({"token_embeddings": word_embeddings,
+                                      "cls_token_embeddings": word_embeddings[:, 0],
+                                      "attention_mask": attention_mask,
+                                      }, pool_max=False, pool_mean_sqrt=False)
+        return self.classification_head(pooling), pooling
 
     def loss(self, predictions, targets) -> torch.tensor:
         return self._loss(predictions, targets)
@@ -211,9 +198,10 @@ class ProtBertBFDClassifier(pl.LightningModule):
     def configure_optimizers(self):
         """ Sets different Learning rates for different parameter groups. """
         parameters = [
-            {"params": self.classification_head.parameters()},
+            {"params": self.classification_head.parameters()
+             },
             {
-                "params": self.ProtBertBFD.parameters(),
+                "params": self.model.parameters(),
                 "lr": self.h.encoder_learning_rate,
             },
         ]
@@ -235,15 +223,21 @@ class ProtBertBFDClassifier(pl.LightningModule):
         }
         return {"optimizer": optimizer, "lr_scheduler":lr_scheduler_config}
 
-    def on_epoch_end(self):
-        """ Pytorch lightning hook """
-        if self.current_epoch + 1 >= self.nr_frozen_epochs:
-            self.unfreeze_encoder()
-        print("Unfroze layers")
-        print(self.ProtBertBFD)
+    # def on_epoch_end(self):
+    #     """ Pytorch lightning hook """
+    #     if self.current_epoch + 1 >= self.nr_frozen_epochs:
+    #         self.unfreeze_encoder()
+    #     print("Unfroze layers")
+    #     print(self.model)
 
     @classmethod
     def add_model_specific_args(cls, parser):
+        parser.add_argument(
+            "--model_name",
+            default="facebook/esm2_t33_650M_UR50D",
+            type=str,
+            help="Maximum sequence length.",
+        )
         parser.add_argument(
             "--max_length",
             default=1024,
@@ -252,13 +246,13 @@ class ProtBertBFDClassifier(pl.LightningModule):
         )
         parser.add_argument(
             "--encoder_learning_rate",
-            default=5e-06,
+            default=1e-05,
             type=float,
             help="Encoder specific learning rate.",
         )
         parser.add_argument(
             "--learning_rate",
-            default=3e-05,
+            default=9e-05,
             type=float,
             help="Classification head learning rate.",
         )
